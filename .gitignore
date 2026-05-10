@@ -1,58 +1,45 @@
-<<<<<<< HEAD
-# --- Frontend (Node/Next.js) ---
-=======
-# Next.js / Node
->>>>>>> Zara
+# Frontend (Node/Next.js)
 node_modules/
 .next/
 out/
 build/
-<<<<<<< HEAD
 .vercel
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# --- Python / Backend ---
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
 venv/
 env/
 .pytest_cache/
 ingestion_errors.log
 
-# --- Database & Config ---
+# Database & config
 .env
 *.db
 instance/
-# Do not upload your raw 1.8M JSON files if they are in the folder
-*.json
-!package.json
-
-# --- OS Specific ---
-.DS_Store
-Thumbs.db
-
-.vscode/
-=======
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-.env
-
-# Database/IDE
 *.sqlite3
-.vscode/
-.idea/
-.DS_Store
 
-# Data Files
+# Data files — do not commit large JSON payloads
 repos.json
 repos_folder/
 **/repos_folder/
 *.json
->>>>>>> Zara
+!package.json
+!firebase.json
+!firestore.indexes.json
+
+# Service account keys (never commit)
+*service-account*.json
+firebase-admin*.json
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

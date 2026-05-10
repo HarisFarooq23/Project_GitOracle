@@ -1,9 +1,9 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 import csv
 from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import func
-from datetime import datetime
+from sqlalchemy import Date, cast, func
+from datetime import date, datetime, timedelta
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from extensions import db
@@ -80,7 +80,23 @@ def _extract_user_id_from_request():
         if token.isdigit():
             return int(token)
 
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("user_id")
+    if raw is not None:
+        try:
+            parsed = int(raw)
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+
     return None
+
+
+def _is_admin_request() -> bool:
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.split(" ", 1)[1].strip() if auth_header.startswith("Bearer ") else ""
+    return token.lower() == "haris"
 
 
 def get_difficulty_limit(time_available):
@@ -99,6 +115,32 @@ def _time_star_bounds(time_available):
     if time_available == "20+":
         return {"max_stars": None, "min_stars": 10000}
     return {"max_stars": None, "min_stars": None}
+
+
+def _current_week_start_utc():
+    today = datetime.utcnow().date()
+    return today - timedelta(days=today.weekday())
+
+
+def _current_week_minutes(user_id: int) -> float:
+    from models import UserActivity
+
+    week_start_date = _current_week_start_utc()
+    week_start_dt = datetime.combine(week_start_date, datetime.min.time())
+    seconds = (
+        db.session.query(
+            func.sum(
+                func.extract(
+                    "epoch",
+                    func.coalesce(UserActivity.left_webapp_at, func.now()) - UserActivity.entered_webapp_at,
+                )
+            )
+        )
+        .filter(UserActivity.user_id == user_id)
+        .filter(UserActivity.entered_webapp_at >= week_start_dt)
+        .scalar()
+    )
+    return round(float(seconds or 0) / 60.0, 2)
 
 
 def _topic_modifier(topic_names):
@@ -243,6 +285,99 @@ def get_users():
     )
 
 
+@api_bp.route("/user/delete-account", methods=["POST"])
+def delete_account():
+    from models import DeletedAccount, User
+    from firestore_user_sync import delete_firestore_user
+
+    user_id = _extract_user_id_from_request()
+    if user_id is None or user_id <= 0:
+        return jsonify({"error": "Missing authenticated user context."}), 401
+
+    payload = request.get_json(silent=True) or {}
+    reason = str(payload.get("reason") or "").strip() or "User requested account deletion."
+
+    user = User.query.filter_by(user_id=user_id).first()
+    if not user:
+        return jsonify({"error": "User not found."}), 404
+
+    archived = DeletedAccount(
+        original_user_id=user.user_id,
+        username=user.username or "",
+        email=user.email or "",
+        reason=reason[:255],
+    )
+    db.session.add(archived)
+    db.session.delete(user)
+    db.session.commit()
+
+    if not delete_firestore_user(user_id):
+        current_app.logger.warning("PostgreSQL account deleted for user_id=%s but Firestore delete failed.", user_id)
+
+    return jsonify({"message": "Account deleted successfully."})
+
+
+@api_bp.route("/user/weekly-goal", methods=["GET", "POST"])
+def user_weekly_goal():
+    from models import WeeklyGoal
+
+    user_id = _extract_user_id_from_request()
+    if user_id is None or user_id <= 0:
+        return jsonify({"error": "Missing authenticated user context."}), 401
+
+    week_start_date = _current_week_start_utc()
+    current_minutes = _current_week_minutes(user_id)
+    row = WeeklyGoal.query.filter_by(user_id=user_id, week_start_date=week_start_date).first()
+
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        goal = str(payload.get("goal") or "").strip()
+        if not goal:
+            return jsonify({"error": "goal is required."}), 400
+        if len(goal) > 255:
+            return jsonify({"error": "goal must be <= 255 characters."}), 400
+
+        if row is None:
+            row = WeeklyGoal(
+                user_id=user_id,
+                week_start_date=week_start_date,
+                goal=goal,
+                current_week_minutes=current_minutes,
+            )
+            db.session.add(row)
+        else:
+            row.goal = goal
+            row.current_week_minutes = current_minutes
+
+        db.session.commit()
+        return jsonify(
+            {
+                "message": "Weekly goal saved.",
+                "weekly_goal": {
+                    "goal": row.goal,
+                    "week_start_date": row.week_start_date.isoformat(),
+                    "current_week_minutes": float(row.current_week_minutes or 0),
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                },
+            }
+        )
+
+    if row is not None:
+        if float(row.current_week_minutes or 0) != current_minutes:
+            row.current_week_minutes = current_minutes
+            db.session.commit()
+    return jsonify(
+        {
+            "weekly_goal": {
+                "goal": row.goal if row else "",
+                "week_start_date": week_start_date.isoformat(),
+                "current_week_minutes": current_minutes,
+                "updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+            }
+        }
+    )
+
+
 @api_bp.route("/auth/register", methods=["POST"])
 def register_user():
     from models import Skill, User, UserSkill
@@ -289,6 +424,17 @@ def register_user():
             db.session.add(UserSkill(user_id=user.user_id, skill_id=skill.skill_id, proficiency=3))
 
     db.session.commit()
+
+    db.session.refresh(user)
+    from firestore_user_sync import sync_pg_user_model_to_firestore
+
+    if not sync_pg_user_model_to_firestore(user):
+        current_app.logger.warning(
+            "User %s saved to PostgreSQL but Firestore sync failed or is not configured "
+            "(check FIREBASE_CREDENTIALS_PATH in InternHub/.env and restart Flask).",
+            user.user_id,
+        )
+
     _append_auth_user_csv(username=username, email=email, password=password, skills=sorted(normalized_input_skills))
     return jsonify(
         {
@@ -339,6 +485,14 @@ def login_user():
     if admin_only and role != "admin":
         return jsonify({"error": "Admin access denied."}), 403
 
+    from firestore_user_sync import sync_pg_user_model_to_firestore
+
+    if not sync_pg_user_model_to_firestore(user):
+        current_app.logger.warning(
+            "Login ok for user_id=%s but Firestore sync failed or is not configured.",
+            user.user_id,
+        )
+
     return jsonify(
         {
             "message": "Login successful.",
@@ -356,9 +510,7 @@ def login_user():
 def admin_overview():
     from models import Issue, Repository, SavedRepository, User
 
-    auth_header = request.headers.get("Authorization", "")
-    token = auth_header.split(" ", 1)[1].strip() if auth_header.startswith("Bearer ") else ""
-    if token.lower() != "haris":
+    if not _is_admin_request():
         return jsonify({"error": "Admin authorization required."}), 403
 
     total_users = db.session.query(func.count(User.user_id)).scalar() or 0
@@ -419,6 +571,100 @@ def admin_overview():
                 }
                 for user in newest_users
             ],
+        }
+    )
+
+
+@api_bp.route("/admin/sync/postgres-to-firebase", methods=["POST"])
+def sync_postgres_users_to_firestore():
+    from models import User
+    from firestore_user_sync import sync_all_pg_users_to_firestore
+
+    if not _is_admin_request():
+        return jsonify({"error": "Admin authorization required."}), 403
+
+    users = User.query.order_by(User.user_id.asc()).all()
+    result = sync_all_pg_users_to_firestore(users)
+    return jsonify(
+        {
+            "message": "PostgreSQL users sync to Firestore completed.",
+            "counts": result,
+        }
+    )
+
+
+@api_bp.route("/admin/sync/firebase-to-postgres", methods=["POST"])
+def sync_firestore_users_to_postgres():
+    from models import User
+    from firestore_user_sync import fetch_firestore_users
+
+    if not _is_admin_request():
+        return jsonify({"error": "Admin authorization required."}), 403
+
+    firestore_users = fetch_firestore_users()
+    created = 0
+    updated = 0
+    skipped = 0
+
+    for row in firestore_users:
+        username = (row.get("username") or "").strip()
+        email = (row.get("email") or "").strip().lower()
+        user_id = row.get("user_id")
+        if not username or not email:
+            skipped += 1
+            continue
+
+        existing = User.query.filter(
+            (User.user_id == user_id)
+            | (User.email.ilike(email))
+            | (User.username.ilike(username))
+        ).first()
+
+        if existing is None:
+            user = User(
+                user_id=user_id,
+                username=username,
+                email=email,
+                # Firestore never stores password_hash; set a random hash placeholder.
+                password_hash=generate_password_hash(f"firebase-sync-{user_id}-{datetime.utcnow().isoformat()}"),
+                is_active=bool(row.get("is_active", True)),
+                created_at=row.get("created_at") or datetime.utcnow(),
+            )
+            db.session.add(user)
+            created += 1
+            continue
+
+        changed = False
+        if existing.username != username:
+            existing.username = username
+            changed = True
+        if existing.email != email:
+            existing.email = email
+            changed = True
+        incoming_active = bool(row.get("is_active", True))
+        if bool(existing.is_active) != incoming_active:
+            existing.is_active = incoming_active
+            changed = True
+        incoming_created_at = row.get("created_at")
+        if incoming_created_at and existing.created_at is None:
+            existing.created_at = incoming_created_at
+            changed = True
+
+        if changed:
+            updated += 1
+        else:
+            skipped += 1
+
+    db.session.commit()
+    return jsonify(
+        {
+            "message": "Firestore users sync to PostgreSQL completed.",
+            "counts": {
+                "fetched": len(firestore_users),
+                "created": created,
+                "updated": updated,
+                "skipped": skipped,
+            },
         }
     )
 
@@ -680,6 +926,132 @@ def get_recommendations():
     )
 
 
+@api_bp.route("/user-activity/session/start", methods=["POST"])
+def user_activity_session_start():
+    """Record the user opening the webapp (one row per visit)."""
+    from models import UserActivity
+
+    user_id = _extract_user_id_from_request()
+    payload = request.get_json(silent=True) or {}
+    if user_id is None and payload.get("user_id") is not None:
+        try:
+            user_id = int(payload.get("user_id"))
+        except (TypeError, ValueError):
+            user_id = None
+
+    if user_id is None or user_id <= 0:
+        return jsonify({"error": "Missing authenticated user context."}), 401
+
+    row = UserActivity(user_id=user_id, entered_webapp_at=datetime.utcnow(), left_webapp_at=None)
+    db.session.add(row)
+    db.session.commit()
+    return jsonify(
+        {
+            "activity_id": row.activity_id,
+            "user_id": row.user_id,
+            "entered_webapp_at": row.entered_webapp_at.isoformat() if row.entered_webapp_at else None,
+        }
+    ), 201
+
+
+@api_bp.route("/user-activity/session/end", methods=["POST"])
+def user_activity_session_end():
+    """Record the user leaving the webapp (sets left_webapp_at on the session row)."""
+    from models import UserActivity
+
+    user_id = _extract_user_id_from_request()
+    payload = request.get_json(silent=True) or {}
+    if user_id is None and payload.get("user_id") is not None:
+        try:
+            user_id = int(payload.get("user_id"))
+        except (TypeError, ValueError):
+            user_id = None
+
+    if user_id is None or user_id <= 0:
+        return jsonify({"error": "Missing authenticated user context."}), 401
+
+    activity_id = payload.get("activity_id")
+    if activity_id is None:
+        return jsonify({"error": "activity_id is required."}), 400
+    try:
+        activity_id = int(activity_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid activity_id."}), 400
+
+    row = UserActivity.query.filter_by(activity_id=activity_id, user_id=user_id).first()
+    if not row:
+        return jsonify({"error": "Activity session not found."}), 404
+
+    if row.left_webapp_at is None:
+        row.left_webapp_at = datetime.utcnow()
+        db.session.commit()
+
+    return jsonify(
+        {
+            "activity_id": row.activity_id,
+            "left_webapp_at": row.left_webapp_at.isoformat() if row.left_webapp_at else None,
+        }
+    )
+
+
+@api_bp.route("/user-activity/stats", methods=["GET", "POST"])
+def user_activity_stats():
+    """Minutes spent per calendar day (UTC) for the last 7 days, for the profile pie chart."""
+    from models import UserActivity
+
+    user_id = _extract_user_id_from_request()
+    if user_id is None:
+        return jsonify({"error": "Missing authenticated user context."}), 401
+    if user_id <= 0:
+        return jsonify({"days": [], "total_minutes": 0.0})
+
+    today = datetime.utcnow().date()
+    week_start = datetime.combine(today - timedelta(days=6), datetime.min.time())
+    day_col = cast(UserActivity.entered_webapp_at, Date)
+    duration_seconds = func.sum(
+        func.extract(
+            "epoch",
+            func.coalesce(UserActivity.left_webapp_at, func.now()) - UserActivity.entered_webapp_at,
+        )
+    )
+
+    rows = (
+        db.session.query(day_col, duration_seconds)
+        .filter(UserActivity.user_id == user_id)
+        .filter(UserActivity.entered_webapp_at >= week_start)
+        .group_by(day_col)
+        .all()
+    )
+    by_day = {}
+    for day_value, sec in rows:
+        if day_value is None:
+            continue
+        if isinstance(day_value, datetime):
+            dkey = day_value.date()
+        elif isinstance(day_value, date):
+            dkey = day_value
+        else:
+            continue
+        by_day[dkey] = float(sec or 0) / 60.0
+
+    weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    out_days = []
+    total = 0.0
+    for i in range(7):
+        d = today - timedelta(days=6 - i)
+        minutes = round(by_day.get(d, 0.0), 2)
+        total += minutes
+        out_days.append(
+            {
+                "date": d.isoformat(),
+                "weekday": weekday_names[d.weekday()],
+                "minutes": minutes,
+            }
+        )
+
+    return jsonify({"days": out_days, "total_minutes": round(total, 2)})
+
+
 @api_bp.route("/search", methods=["GET", "POST"])
 def search_repositories():
     from models import RepoTopic, Repository, RepositoryTopic
@@ -811,3 +1183,82 @@ def search_repositories():
             for repo, score in rows
         ]
     })
+
+
+@api_bp.route("/search/recommended-by-skills", methods=["GET"])
+def recommended_repositories_by_skills():
+    from models import RepoTopic, Repository, RepositoryTopic, Skill, UserSkill
+
+    user_id = _extract_user_id_from_request()
+    if user_id is None or user_id <= 0:
+        return jsonify({"error": "Missing authenticated user context."}), 401
+
+    skill_rows = (
+        db.session.query(Skill.name)
+        .join(UserSkill, UserSkill.skill_id == Skill.skill_id)
+        .filter(UserSkill.user_id == user_id)
+        .all()
+    )
+    user_skills = [str(name).strip().lower() for (name,) in skill_rows if name]
+
+    candidates = Repository.query.order_by(Repository.stars.desc()).limit(250).all()
+    if not candidates:
+        return jsonify({"count": 0, "skills": user_skills, "fallback": True, "results": []})
+
+    repo_ids = [repo.repo_id for repo in candidates]
+    topic_rows = (
+        db.session.query(RepositoryTopic.repo_id, RepoTopic.name)
+        .join(RepoTopic, RepoTopic.topic_id == RepositoryTopic.topic_id)
+        .filter(RepositoryTopic.repo_id.in_(repo_ids))
+        .all()
+    )
+    topics_by_repo = {}
+    for repo_id, topic_name in topic_rows:
+        topics_by_repo.setdefault(repo_id, []).append((topic_name or "").strip().lower())
+
+    def _repo_skill_score(repo):
+        if not user_skills:
+            return 0
+        searchable_text = " ".join(
+            [
+                (repo.language or "").lower(),
+                (repo.name or "").lower(),
+                (repo.full_name or "").lower(),
+                (repo.description or "").lower(),
+                " ".join(topics_by_repo.get(repo.repo_id, [])),
+            ]
+        )
+        return sum(1 for skill in user_skills if skill and skill in searchable_text)
+
+    scored = []
+    for repo in candidates:
+        score = _repo_skill_score(repo)
+        if user_skills and score <= 0:
+            continue
+        scored.append((repo, score))
+
+    fallback = False
+    if not scored:
+        fallback = True
+        scored = [(repo, 0) for repo in candidates[:20]]
+
+    scored.sort(key=lambda row: (row[1], row[0].stars or 0), reverse=True)
+    top_rows = scored[:20]
+    top_repos = [repo for repo, _ in top_rows]
+    topics_map = _topics_by_repo_id([repo.repo_id for repo in top_repos])
+
+    return jsonify(
+        {
+            "count": len(top_repos),
+            "skills": user_skills,
+            "fallback": fallback,
+            "results": [
+                _serialize_repository(
+                    repo,
+                    topics_map,
+                    difficulty_score=float(score) if score is not None else None,
+                )
+                for repo, score in top_rows
+            ],
+        }
+    )

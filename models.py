@@ -52,6 +52,37 @@ class UserAvailability(db.Model):
     day_of_week = db.Column(db.String(10))
     hours_available = db.Column(db.Numeric(3, 1))
 
+class UserActivity(db.Model):
+    __tablename__ = 'user_activity'
+    activity_id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
+    entered_webapp_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    left_webapp_at = db.Column(db.DateTime, nullable=True)
+
+
+class DeletedAccount(db.Model):
+    __tablename__ = 'deleted_accounts'
+    deleted_account_id = db.Column(db.Integer, primary_key=True)
+    original_user_id = db.Column(db.Integer)
+    username = db.Column(db.String(50), nullable=False)
+    email = db.Column(db.String(100), nullable=False)
+    deleted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    reason = db.Column(db.String(255))
+
+
+class WeeklyGoal(db.Model):
+    __tablename__ = 'weekly_goals'
+    weekly_goal_id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
+    week_start_date = db.Column(db.Date, nullable=False)
+    goal = db.Column(db.String(255), nullable=False)
+    current_week_minutes = db.Column(db.Numeric(8, 2), nullable=False, default=0)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'week_start_date', name='_weekly_goal_uc'),
+        db.Index('idx_weekly_goals_user_week', 'user_id', 'week_start_date'),
+    )
+
 # =============================================================================
 # LAYER 2: REPOSITORY LAYER
 # =============================================================================

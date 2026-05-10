@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS user_availability (
     hours_available NUMERIC(3,1)
 );
 
+CREATE TABLE IF NOT EXISTS user_activity (
+    activity_id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    entered_webapp_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    left_webapp_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_activity_user_id ON user_activity(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_activity_entered ON user_activity(user_id, entered_webapp_at DESC);
+
 -- ═══════════════════════════════════════════════════════════
 -- LAYER 2: REPOSITORY LAYER
 -- ═══════════════════════════════════════════════════════════

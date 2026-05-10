@@ -1,0 +1,16 @@
+rules_version = '2';
+// Only the `users` collection is used for app data mirroring — and only via the Admin SDK
+// from the Flask backend. Client SDK reads/writes are denied so passwords and other
+// tables never need to touch the browser.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /users/{userId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

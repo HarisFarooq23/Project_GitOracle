@@ -66,3 +66,61 @@ export async function flaskRequest<T>({
 
   return (await response.json()) as T;
 }
+
+export type UserActivityStartResponse = {
+  activity_id: number;
+  user_id: number;
+  entered_webapp_at: string | null;
+};
+
+export type UserActivityDay = {
+  date: string;
+  weekday: string;
+  minutes: number;
+};
+
+export type UserActivityStatsResponse = {
+  days: UserActivityDay[];
+  total_minutes: number;
+};
+
+export async function startUserActivitySession(
+  userId: number,
+  token: string | null
+): Promise<UserActivityStartResponse> {
+  return flaskRequest<UserActivityStartResponse>({
+    path: `/api/user-activity/session/start?user_id=${userId}`,
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+}
+
+export async function endUserActivitySession(
+  userId: number,
+  activityId: number,
+  token: string | null
+): Promise<void> {
+  await flaskRequest({
+    path: `/api/user-activity/session/end?user_id=${userId}`,
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, activity_id: activityId }),
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+}
+
+export async function getUserActivityStats(
+  userId: number,
+  token: string | null
+): Promise<UserActivityStatsResponse> {
+  return flaskRequest<UserActivityStatsResponse>({
+    path: "/api/user-activity/stats",
+    method: "POST",
+    timeoutMs: 12_000,
+    body: JSON.stringify({ user_id: userId }),
+    headers: {
+      "X-User-Id": String(userId),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+}

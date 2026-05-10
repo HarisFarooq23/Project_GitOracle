@@ -110,3 +110,14 @@ export function setSessionEmail(email: string): void {
   window.localStorage.removeItem(USER_EMAIL_KEY);
   window.sessionStorage.setItem(USER_EMAIL_KEY, email);
 }
+
+export function clearSession(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const keys = [USER_ID_KEY, AUTH_TOKEN_KEY, USER_ROLE_KEY, USERNAME_KEY, USER_EMAIL_KEY];
+  for (const key of keys) {
+    window.sessionStorage.removeItem(key);
+    window.localStorage.removeItem(key);
+  }
+}

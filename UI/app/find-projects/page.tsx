@@ -52,6 +52,9 @@ export default function FindProjectsPage() {
   const [timeAvailable, setTimeAvailable] = useState<"1-3" | "5-10" | "20+">("5-10");
   const [mode, setMode] = useState<SearchMode>("filtered");
   const [didSearch, setDidSearch] = useState(false);
+  const [showSkillRecommendations, setShowSkillRecommendations] = useState(false);
+  const [skillRecommendedProjects, setSkillRecommendedProjects] = useState<RepositoryResult[]>([]);
+  const [skillRecLabel, setSkillRecLabel] = useState("");
   const isFirstLoadRef = useRef(true);
 
   useEffect(() => {
@@ -224,6 +227,30 @@ export default function FindProjectsPage() {
     [projects]
   );
 
+  const skillRecommendedRows = useMemo<TrendingRepo[]>(
+    () =>
+      skillRecommendedProjects.map((project, idx) => {
+        const diff = project.difficulty_score ?? 3;
+        return {
+          id: String(project.repo_id ?? idx),
+          name: project.full_name,
+          owner: project.full_name.split("/")[0] || "unknown",
+          url: project.html_url || "#",
+          stars: project.stars || 0,
+          forks: 0,
+          openIssues: Math.max(0, Math.round((project.difficulty_score || 2) * 6)),
+          watchers: Math.max(1, Math.round((project.stars || 0) * 0.3)),
+          sizeKb: Math.max(100, Math.round((project.stars || 1) * 2)),
+          contributors: Math.max(1, Math.round((project.difficulty_score || 2) * 3)),
+          pullRequests: Math.max(1, Math.round((project.difficulty_score || 2) * 2)),
+          commitActivity: diff <= 2 ? "Low" : diff <= 4 ? "Medium" : "High",
+          languages: [project.language || "Unknown"],
+          difficulty: diff <= 2 ? "low" : diff <= 4 ? "medium" : diff <= 5 ? "amateur" : "high",
+        };
+      }),
+    [skillRecommendedProjects]
+  );
+
   const handleSaveRepo = async (repo: TrendingRepo) => {
     const userId = getSessionUserId();
     const token = getSessionToken();
@@ -241,6 +268,55 @@ export default function FindProjectsPage() {
       setError(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Failed to save repository.");
+    }
+  };
+
+  const loadSkillRecommendations = async () => {
+    const userId = getSessionUserId();
+    const token = getSessionToken();
+    if (!userId) {
+      setError("Please sign in to get personalized project recommendations.");
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setShowSkillRecommendations(true);
+    try {
+      const data = await flaskRequest<{
+        count: number;
+        skills: string[];
+        fallback: boolean;
+        results: RepositoryResult[];
+      }>({
+        path: "/api/search/recommended-by-skills",
+        headers: {
+          "X-User-Id": String(userId),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        timeoutMs: 12_000,
+      });
+
+      setSkillRecommendedProjects(data.results || []);
+      if (data.fallback) {
+        setSkillRecLabel(
+          "No exact skill match found yet, so here are popular repositories to start with."
+        );
+      } else if (data.skills.length > 0) {
+        setSkillRecLabel(`Recommended from your skills: ${data.skills.slice(0, 6).join(", ")}`);
+      } else {
+        setSkillRecLabel("Add skills in your account profile to get tighter recommendations.");
+      }
+    } catch (requestError) {
+      setSkillRecommendedProjects([]);
+      setSkillRecLabel("");
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Failed to load personalized recommendations."
+      );
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -372,6 +448,13 @@ export default function FindProjectsPage() {
           <p className="mt-2 text-sm text-zinc-400">
             Discover high-signal repositories from your InternHub database, ready to explore.
           </p>
+          <button
+            type="button"
+            onClick={() => void loadSkillRecommendations()}
+            className="mt-3 rounded-xl border border-cyan-300/40 bg-cyan-500/10 px-4 py-2 text-sm text-cyan-200 transition hover:bg-cyan-500/20"
+          >
+            Can&apos;t find projects recommended to your taste? Here are some recommended projects for you
+          </button>
           <p className="mt-2 text-xs text-zinc-500">
             Search mode: {mode === "keyword" ? "Keyword + structured filters" : "Structured filters"}
           </p>
@@ -404,6 +487,17 @@ export default function FindProjectsPage() {
                 primaryActionLabel="Save"
                 onPrimaryAction={handleSaveRepo}
               />
+            </div>
+          )}
+          {!isLoading && showSkillRecommendations && skillRecommendedRows.length > 0 && (
+            <div className="mt-6">
+              <LeadsTable
+                title="Recommended Repositories (Based on Your Skills)"
+                leads={skillRecommendedRows}
+                primaryActionLabel="Save"
+                onPrimaryAction={handleSaveRepo}
+              />
+              {skillRecLabel ? <p className="mt-2 text-xs text-cyan-200/90">{skillRecLabel}</p> : null}
             </div>
           )}
           {!isLoading && suggestions.length > 0 && (

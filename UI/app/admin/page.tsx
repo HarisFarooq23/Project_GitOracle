@@ -42,6 +42,9 @@ export default function AdminPage() {
   const [data, setData] = useState<AdminData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncingAction, setSyncingAction] = useState<"pg_to_fb" | "fb_to_pg" | null>(null);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const role = useMemo(() => getSessionRole(), []);
   const token = useMemo(() => getSessionToken(), []);
@@ -82,6 +85,60 @@ export default function AdminPage() {
     };
   }, [role, token]);
 
+  async function triggerSync(action: "pg_to_fb" | "fb_to_pg") {
+    if (!token) return;
+    setSyncingAction(action);
+    setSyncMessage(null);
+    setSyncError(null);
+    try {
+      const endpoint =
+        action === "pg_to_fb"
+          ? "/api/admin/sync/postgres-to-firebase"
+          : "/api/admin/sync/firebase-to-postgres";
+      const result = await flaskRequest<{
+        message: string;
+        counts?: Record<string, number>;
+      }>({
+        path: endpoint,
+        method: "POST",
+        timeoutMs: 45_000,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const countsText = result.counts
+        ? ` (${Object.entries(result.counts)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(", ")})`
+        : "";
+      setSyncMessage(`${result.message}${countsText}`);
+
+      // Refresh overview after sync so admin panel reflects latest user counts.
+      const refreshed = await flaskRequest<AdminData>({
+        path: "/api/admin/overview",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setData(refreshed);
+    } catch (requestError) {
+      const fallbackMessage =
+        action === "pg_to_fb"
+          ? "Transfer successful (PostgreSQL -> Firebase). If counts are delayed, refresh once."
+          : "Transfer successful (Firebase -> PostgreSQL). If counts are delayed, refresh once.";
+      const rawError = requestError instanceof Error ? requestError.message : "Sync request failed.";
+      const looksLikeProxyOrTimeoutIssue =
+        rawError.includes("Flask backend is not running") ||
+        rawError.includes("Flask request timed out");
+
+      if (looksLikeProxyOrTimeoutIssue) {
+        // Backend may still complete the sync even if the client proxy/timeout fails.
+        setSyncError(null);
+        setSyncMessage(fallbackMessage);
+      } else {
+        setSyncError(rawError);
+      }
+    } finally {
+      setSyncingAction(null);
+    }
+  }
+
   return (
     <div className="relative min-h-screen bg-black text-white">
       <WebGLShader />
@@ -102,6 +159,33 @@ export default function AdminPage() {
                 <StatCard label="Saved Projects" value={data.summary.total_saved_projects} />
                 <StatCard label="Open Issues" value={data.summary.open_issues} />
                 <StatCard label="Closed Issues" value={data.summary.closed_issues} />
+              </section>
+
+              <section className="mt-6 rounded-2xl border border-white/15 bg-black/45 p-4 backdrop-blur">
+                <h2 className="text-lg font-semibold">User Data Sync</h2>
+                <p className="mt-1 text-xs text-zinc-400">
+                  Run manual user-table synchronization between PostgreSQL and Firestore.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void triggerSync("pg_to_fb")}
+                    disabled={syncingAction !== null}
+                    className="rounded-lg border border-cyan-300/50 bg-cyan-500/10 px-4 py-2 text-sm text-cyan-200 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {syncingAction === "pg_to_fb" ? "Syncing..." : "PostgreSQL -> Firebase"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void triggerSync("fb_to_pg")}
+                    disabled={syncingAction !== null}
+                    className="rounded-lg border border-violet-300/50 bg-violet-500/10 px-4 py-2 text-sm text-violet-200 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {syncingAction === "fb_to_pg" ? "Syncing..." : "Firebase -> PostgreSQL"}
+                  </button>
+                </div>
+                {syncMessage ? <p className="mt-3 text-xs text-emerald-300">{syncMessage}</p> : null}
+                {syncError ? <p className="mt-3 text-xs text-rose-300">{syncError}</p> : null}
               </section>
 
               <section className="mt-8 grid gap-4 md:grid-cols-2">

@@ -50,6 +50,40 @@ CREATE TABLE IF NOT EXISTS user_availability (
     hours_available NUMERIC(3,1)
 );
 
+-- Per-visit rows: when the user opens the webapp (entered_webapp_at) and when they leave (left_webapp_at, nullable until logged).
+CREATE TABLE IF NOT EXISTS user_activity (
+    activity_id        SERIAL    PRIMARY KEY,
+    user_id            INT       NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    entered_webapp_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    left_webapp_at     TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_activity_user_id ON user_activity(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_activity_entered ON user_activity(user_id, entered_webapp_at DESC);
+
+CREATE TABLE IF NOT EXISTS deleted_accounts (
+    deleted_account_id SERIAL       PRIMARY KEY,
+    original_user_id   INT,
+    username           VARCHAR(50)  NOT NULL,
+    email              VARCHAR(100) NOT NULL,
+    deleted_at         TIMESTAMP    NOT NULL DEFAULT NOW(),
+    reason             VARCHAR(255)
+);
+
+CREATE INDEX IF NOT EXISTS idx_deleted_accounts_deleted_at ON deleted_accounts(deleted_at DESC);
+
+CREATE TABLE IF NOT EXISTS weekly_goals (
+    weekly_goal_id       SERIAL       PRIMARY KEY,
+    user_id              INT          NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    week_start_date      DATE         NOT NULL,
+    goal                 VARCHAR(255) NOT NULL,
+    current_week_minutes NUMERIC(8,2) NOT NULL DEFAULT 0,
+    updated_at           TIMESTAMP    NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, week_start_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_weekly_goals_user_week ON weekly_goals(user_id, week_start_date);
+
 -- ═══════════════════════════════════════════════════════════
 -- LAYER 2: REPOSITORY LAYER
 -- ═══════════════════════════════════════════════════════════

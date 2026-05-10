@@ -83,7 +83,7 @@ export default function SignInRoute() {
         showAdminOption
         onResetPassword={() => console.log("Reset Password clicked")}
         onCreateAccount={() => router.push("/create-account")}
-        bottomNote="Admin credentials: username haris, password gitoracle"
+        
       />
     </div>
   );

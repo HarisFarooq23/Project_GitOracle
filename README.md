@@ -226,8 +226,13 @@ into:
 
 --------------
 
+##Environment setup
+
+
 Any required dependencies can be installed directly from 
 cd UI
 npm install 
 
 But there need be .env with firebase credentials path which github doesnt allow to commit since they are sensitive details and have to be stored locally . 
+the .env file looks something like this FIREBASE_CREDENTIALS_PATH=C:/Users/HP/Downloads/dbms-gitoracle-firebase-adminsdk-fbsvc-0630d75d03.json
+

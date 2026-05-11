@@ -11,6 +11,8 @@ interface LeadsTableProps {
   className?: string;
   primaryActionLabel?: string;
   onPrimaryAction?: (repo: TrendingRepo) => void;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: (repo: TrendingRepo) => void;
 }
 
 const difficultyStyles: Record<TrendingRepo["difficulty"], string> = {
@@ -26,8 +28,13 @@ export function LeadsTable({
   className = "",
   primaryActionLabel,
   onPrimaryAction,
+  secondaryActionLabel,
+  onSecondaryAction,
 }: LeadsTableProps) {
-  const hasAction = Boolean(primaryActionLabel && onPrimaryAction);
+  const primaryOn = Boolean(primaryActionLabel && onPrimaryAction);
+  const secondaryOn = Boolean(secondaryActionLabel && onSecondaryAction);
+  const hasAction = primaryOn || secondaryOn;
+  const actionsHeader = primaryOn && secondaryOn ? "Actions" : "Action";
   return (
     <div className={`w-full ${className}`}>
       <div className="mb-4 flex items-center justify-between">
@@ -44,7 +51,7 @@ export function LeadsTable({
           <div>Open Issues</div>
           <div>PRs</div>
           <div>Difficulty</div>
-          {hasAction ? <div>Action</div> : null}
+          {hasAction ? <div>{actionsHeader}</div> : null}
         </div>
 
         {leads.map((repo, idx) => (
@@ -74,14 +81,25 @@ export function LeadsTable({
               </span>
             </div>
             {hasAction ? (
-              <div className="flex items-center">
-                <button
-                  type="button"
-                  onClick={() => onPrimaryAction?.(repo)}
-                  className="rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-200 hover:bg-cyan-500/20"
-                >
-                  {primaryActionLabel}
-                </button>
+              <div className="flex flex-wrap items-center justify-end gap-1">
+                {primaryOn ? (
+                  <button
+                    type="button"
+                    onClick={() => onPrimaryAction?.(repo)}
+                    className="rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-200 hover:bg-cyan-500/20"
+                  >
+                    {primaryActionLabel}
+                  </button>
+                ) : null}
+                {secondaryOn ? (
+                  <button
+                    type="button"
+                    onClick={() => onSecondaryAction?.(repo)}
+                    className="rounded-lg border border-violet-400/40 bg-violet-500/10 px-2 py-1 text-xs text-violet-200 hover:bg-violet-500/20"
+                  >
+                    {secondaryActionLabel}
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </motion.div>

@@ -8,6 +8,11 @@ import { getSessionToken, getSessionUserId } from "@/lib/auth-session";
 import { flaskRequest } from "@/lib/flask-api";
 import type { TrendingRepo } from "@/lib/github-trending";
 
+type CreateIssueResponse = {
+  message: string;
+  issue: { issue_id: number; repo_id: number; title: string };
+};
+
 interface RepositoryResponse {
   saved_projects: Array<{
     repo_id: number;
@@ -28,6 +33,13 @@ export default function SavedProjectsPage() {
   const [completedRepositories, setCompletedRepositories] = useState<RepositoryResponse["saved_projects"]>([]);
   const [repositoriesError, setRepositoriesError] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
+  const [issueModalRepo, setIssueModalRepo] = useState<TrendingRepo | null>(null);
+  const [issueTitle, setIssueTitle] = useState("");
+  const [issueBody, setIssueBody] = useState("");
+  const [issueLabelsText, setIssueLabelsText] = useState("");
+  const [issueGithubUrl, setIssueGithubUrl] = useState("");
+  const [issueSubmitting, setIssueSubmitting] = useState(false);
+  const [issueFormError, setIssueFormError] = useState<string | null>(null);
 
   const userId = useMemo(() => getSessionUserId(), []);
   const token = useMemo(() => getSessionToken(), []);
@@ -107,6 +119,60 @@ export default function SavedProjectsPage() {
       difficulty: "medium",
     }));
 
+  const openAddIssueModal = (repo: TrendingRepo) => {
+    setIssueModalRepo(repo);
+    setIssueTitle("");
+    setIssueBody("");
+    setIssueLabelsText("");
+    setIssueGithubUrl("");
+    setIssueFormError(null);
+  };
+
+  const closeAddIssueModal = () => {
+    setIssueModalRepo(null);
+    setIssueSubmitting(false);
+    setIssueFormError(null);
+  };
+
+  const submitNewIssue = async () => {
+    if (!userId || !issueModalRepo) return;
+    const title = issueTitle.trim();
+    if (!title) {
+      setIssueFormError("Title is required.");
+      return;
+    }
+    setIssueSubmitting(true);
+    setIssueFormError(null);
+    const labels = issueLabelsText
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const url = issueGithubUrl.trim();
+    try {
+      await flaskRequest<CreateIssueResponse>({
+        path: "/api/issues/create",
+        method: "POST",
+        timeoutMs: 15_000,
+        headers: {
+          "X-User-Id": String(userId),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          repo_id: Number(issueModalRepo.id),
+          title,
+          body: issueBody.trim() || undefined,
+          labels: labels.length ? labels : undefined,
+          github_url: url || undefined,
+        }),
+      });
+      closeAddIssueModal();
+    } catch (err) {
+      setIssueFormError(err instanceof Error ? err.message : "Could not create issue.");
+    } finally {
+      setIssueSubmitting(false);
+    }
+  };
+
   const markCompleted = async (repo: TrendingRepo) => {
     if (!userId) return;
     try {
@@ -154,13 +220,94 @@ export default function SavedProjectsPage() {
               leads={toTrending(repositories)}
               primaryActionLabel="Mark Completed"
               onPrimaryAction={markCompleted}
+              secondaryActionLabel="Add issues"
+              onSecondaryAction={openAddIssueModal}
             />
           </section>
         ) : null}
         {!loading && !repositoriesError ? (
           <section className="mt-8">
-            <LeadsTable title="Completed Repositories" leads={toTrending(completedRepositories)} />
+            <LeadsTable
+              title="Completed Repositories"
+              leads={toTrending(completedRepositories)}
+              secondaryActionLabel="Add issues"
+              onSecondaryAction={openAddIssueModal}
+            />
           </section>
+        ) : null}
+        {issueModalRepo ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-issue-title"
+          >
+            <div className="w-full max-w-lg rounded-2xl border border-white/15 bg-zinc-950 p-6 shadow-2xl">
+              <h2 id="add-issue-title" className="text-lg font-semibold text-white">
+                Add issue
+              </h2>
+              <p className="mt-1 truncate text-sm text-zinc-400">{issueModalRepo.name}</p>
+              <div className="mt-4 space-y-3">
+                <label className="block text-xs text-zinc-500">
+                  Title <span className="text-rose-400">*</span>
+                  <input
+                    value={issueTitle}
+                    onChange={(e) => setIssueTitle(e.target.value)}
+                    maxLength={500}
+                    className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-violet-400"
+                    placeholder="Short summary"
+                  />
+                </label>
+                <label className="block text-xs text-zinc-500">
+                  Description
+                  <textarea
+                    value={issueBody}
+                    onChange={(e) => setIssueBody(e.target.value)}
+                    rows={4}
+                    className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-violet-400"
+                    placeholder="Details, acceptance criteria, links…"
+                  />
+                </label>
+                <label className="block text-xs text-zinc-500">
+                  Labels (comma-separated)
+                  <input
+                    value={issueLabelsText}
+                    onChange={(e) => setIssueLabelsText(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-violet-400"
+                    placeholder="e.g. bug, documentation, good first issue"
+                  />
+                </label>
+                <label className="block text-xs text-zinc-500">
+                  GitHub issue URL (optional)
+                  <input
+                    value={issueGithubUrl}
+                    onChange={(e) => setIssueGithubUrl(e.target.value)}
+                    maxLength={300}
+                    className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-violet-400"
+                    placeholder="https://github.com/owner/repo/issues/123"
+                  />
+                </label>
+              </div>
+              {issueFormError ? <p className="mt-3 text-sm text-rose-300">{issueFormError}</p> : null}
+              <div className="mt-6 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeAddIssueModal}
+                  className="rounded-lg border border-white/20 px-4 py-2 text-sm text-zinc-300 hover:bg-white/5"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={issueSubmitting}
+                  onClick={() => void submitNewIssue()}
+                  className="rounded-lg border border-violet-400/50 bg-violet-500/20 px-4 py-2 text-sm text-violet-100 hover:bg-violet-500/30 disabled:opacity-50"
+                >
+                  {issueSubmitting ? "Saving…" : "Save issue"}
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
       </main>
     </div>

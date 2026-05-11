@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { flaskRequest } from "@/lib/flask-api";
+import { flaskFormRequest, flaskRequest } from "@/lib/flask-api";
 import {
   setSessionEmail,
   setSessionRole,
@@ -33,6 +33,7 @@ export default function CreateAccountPage() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [profilePic, setProfilePic] = useState<File | null>(null);
 
   const toggleSkill = (skill: string) => {
     setSelectedSkills((current) =>
@@ -51,13 +52,23 @@ export default function CreateAccountPage() {
     const password = String(formData.get("password") ?? "");
 
     try {
-      const data = await flaskRequest<{
-        user: { user_id: number; username: string; email: string; role: string };
-      }>({
-        path: "/api/auth/register",
-        method: "POST",
-        body: JSON.stringify({ username, email, password, skills: selectedSkills }),
-      });
+      type RegisterResponse = { user: { user_id: number; username: string; email: string; role: string } };
+      let data: RegisterResponse;
+      if (profilePic) {
+        const fd = new FormData();
+        fd.append("username", username);
+        fd.append("email", email);
+        fd.append("password", password);
+        fd.append("skills", JSON.stringify(selectedSkills));
+        fd.append("picture", profilePic);
+        data = await flaskFormRequest<RegisterResponse>({ path: "/api/auth/register", body: fd });
+      } else {
+        data = await flaskRequest<RegisterResponse>({
+          path: "/api/auth/register",
+          method: "POST",
+          body: JSON.stringify({ username, email, password, skills: selectedSkills }),
+        });
+      }
       setSessionUserId(data.user.user_id);
       setSessionToken(data.user.username);
       setSessionRole(data.user.role);
@@ -81,6 +92,18 @@ export default function CreateAccountPage() {
             <input name="username" placeholder="Username" className="w-full rounded-2xl border border-border bg-foreground/5 p-4 text-sm" />
             <input name="email" type="email" placeholder="Email address" className="w-full rounded-2xl border border-border bg-foreground/5 p-4 text-sm" />
             <input name="password" type="password" placeholder="Password" className="w-full rounded-2xl border border-border bg-foreground/5 p-4 text-sm" />
+            <div className="rounded-2xl border border-border bg-foreground/5 p-4">
+              <p className="mb-2 text-xs text-muted-foreground">Profile picture (optional)</p>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/gif,image/webp"
+                className="w-full text-sm text-muted-foreground file:mr-3 file:rounded-lg file:border-0 file:bg-violet-500/20 file:px-3 file:py-2 file:text-xs file:font-medium file:text-violet-100"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  setProfilePic(file);
+                }}
+              />
+            </div>
             <div className="rounded-2xl border border-border bg-foreground/5 p-3">
               <p className="mb-2 text-xs text-muted-foreground">Select your skill set</p>
               <div className="grid grid-cols-2 gap-2">

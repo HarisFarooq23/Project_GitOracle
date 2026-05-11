@@ -67,6 +67,66 @@ export async function flaskRequest<T>({
   return (await response.json()) as T;
 }
 
+export async function flaskFormRequest<T>({
+  path,
+  body,
+  timeoutMs = 30_000,
+  headers,
+}: {
+  path: string;
+  body: FormData;
+  timeoutMs?: number;
+  headers?: HeadersInit;
+}): Promise<T> {
+  const baseUrl = typeof window === "undefined" ? SERVER_FLASK_BASE_URL : CLIENT_FLASK_BASE_URL;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      body,
+      headers: {
+        ...(headers ?? {}),
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`Flask request timed out after ${timeoutMs}ms: ${path}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    const textBody = await response.text();
+    const combined = `${response.status} ${response.statusText} ${textBody}`.toLowerCase();
+    const looksLikeProxyFailure =
+      baseUrl.startsWith("/") &&
+      response.status >= 500 &&
+      combined.includes("internal server error");
+    if (
+      combined.includes("econnrefused") ||
+      combined.includes("failed to proxy") ||
+      combined.includes("connect error") ||
+      looksLikeProxyFailure
+    ) {
+      throw new Error(
+        "Flask backend is not running on http://127.0.0.1:5000. Start backend with `python app.py` from the `InternHub` folder."
+      );
+    }
+    throw new Error(
+      `Flask request failed: ${response.status} ${response.statusText}${textBody ? ` - ${textBody}` : ""}`
+    );
+  }
+
+  return (await response.json()) as T;
+}
+
 export type UserActivityStartResponse = {
   activity_id: number;
   user_id: number;

@@ -213,6 +213,7 @@ export default function UserProfilePage() {
             name={username}
             role="Learning-Focused Developer"
             email={email}
+            avatarSrc={`/flask/api/user/profile-picture?user_id=${userId}`}
             statusText="Weekly planning active"
             glowText="Optimizing your next project path"
             statusColor="bg-violet-400"

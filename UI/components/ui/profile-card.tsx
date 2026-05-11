@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Clock, Copy, Plus, Zap } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,6 +29,15 @@ export default function ProfileCard({
   className,
 }: ProfileCardProps) {
   const [copied, setCopied] = useState(false);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const avatarErrorHandled = useRef(false);
+  const defaultAvatar =
+    "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=160&q=80";
+
+  useEffect(() => {
+    setAvatarFailed(false);
+    avatarErrorHandled.current = false;
+  }, [avatarSrc]);
 
   const timeText = useMemo(() => {
     const now = new Date();
@@ -79,7 +88,16 @@ export default function ProfileCard({
 
           <div className="flex flex-wrap items-center gap-5">
             <div className="h-14 w-14 shrink-0 overflow-hidden rounded-full ring-2 ring-white/10">
-              <img src={avatarSrc} alt={`${name} avatar`} className="h-full w-full object-cover" />
+              <img
+                src={avatarFailed ? defaultAvatar : avatarSrc}
+                alt={`${name} avatar`}
+                className="h-full w-full object-cover"
+                onError={() => {
+                  if (avatarErrorHandled.current) return;
+                  avatarErrorHandled.current = true;
+                  setAvatarFailed(true);
+                }}
+              />
             </div>
             <div className="min-w-0">
               <h3 className="truncate text-xl font-semibold tracking-tight sm:text-2xl">{name}</h3>

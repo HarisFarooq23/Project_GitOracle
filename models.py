@@ -17,6 +17,14 @@ class User(db.Model):
     profile = db.relationship('UserProfile', backref='user', uselist=False, cascade="all, delete-orphan")
     skills = db.relationship('UserSkill', backref='user', cascade="all, delete-orphan")
     availability = db.relationship('UserAvailability', backref='user', cascade="all, delete-orphan")
+    pic = db.relationship('UserPic', backref='user', uselist=False, cascade="all, delete-orphan")
+
+
+class UserPic(db.Model):
+    __tablename__ = 'user_pic'
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id', ondelete='CASCADE'), primary_key=True)
+    picture = db.Column(db.LargeBinary, nullable=False)
+
 
 class UserProfile(db.Model):
     __tablename__ = 'user_profiles'

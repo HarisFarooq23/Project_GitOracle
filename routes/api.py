@@ -1,7 +1,9 @@
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, Response
 import csv
+import json
+import secrets
 from pathlib import Path
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import Date, cast, func
 from datetime import date, datetime, timedelta
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -9,6 +11,22 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from extensions import db
 
 api_bp = Blueprint("api_bp", __name__)
+
+MAX_PROFILE_PIC_BYTES = 5 * 1024 * 1024
+
+
+def _guess_image_mime(data: bytes) -> str:
+    if not data or len(data) < 12:
+        return "application/octet-stream"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
 
 
 def resolve_html_url(repo):
@@ -378,15 +396,60 @@ def user_weekly_goal():
     )
 
 
+@api_bp.route("/user/profile-picture", methods=["GET"])
+def get_user_profile_picture():
+    from models import UserPic
+
+    user_id = request.args.get("user_id", type=int)
+    if user_id is None or user_id <= 0:
+        user_id = _extract_user_id_from_request()
+    if user_id is None or user_id <= 0:
+        return jsonify({"error": "user_id is required."}), 400
+
+    row = UserPic.query.filter_by(user_id=user_id).first()
+    if not row or not row.picture:
+        return jsonify({"error": "No profile picture for this user."}), 404
+
+    mime = _guess_image_mime(bytes(row.picture))
+    if mime == "application/octet-stream":
+        mime = "image/jpeg"
+    return Response(
+        bytes(row.picture),
+        mimetype=mime,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @api_bp.route("/auth/register", methods=["POST"])
 def register_user():
-    from models import Skill, User, UserSkill
+    from models import Skill, User, UserPic, UserSkill
 
-    payload = request.get_json(silent=True) or {}
-    username = str(payload.get("username") or "").strip()
-    email = str(payload.get("email") or "").strip().lower()
-    password = str(payload.get("password") or "")
-    skills = payload.get("skills") if isinstance(payload.get("skills"), list) else []
+    picture_bytes = None
+    content_type = (request.content_type or "").lower()
+    if "multipart/form-data" in content_type:
+        username = str(request.form.get("username") or "").strip()
+        email = str(request.form.get("email") or "").strip().lower()
+        password = str(request.form.get("password") or "")
+        skills_raw = request.form.get("skills") or "[]"
+        try:
+            parsed_skills = json.loads(skills_raw) if isinstance(skills_raw, str) else []
+        except json.JSONDecodeError:
+            parsed_skills = []
+        skills = parsed_skills if isinstance(parsed_skills, list) else []
+        upload = request.files.get("picture")
+        if upload and upload.filename:
+            raw = upload.read() or b""
+            if len(raw) > MAX_PROFILE_PIC_BYTES:
+                return jsonify({"error": "Profile picture must be 5MB or smaller."}), 400
+            if raw and _guess_image_mime(raw) == "application/octet-stream":
+                return jsonify({"error": "Profile picture must be a JPEG, PNG, GIF, or WebP image."}), 400
+            picture_bytes = raw if raw else None
+    else:
+        payload = request.get_json(silent=True) or {}
+        username = str(payload.get("username") or "").strip()
+        email = str(payload.get("email") or "").strip().lower()
+        password = str(payload.get("password") or "")
+        skills = payload.get("skills") if isinstance(payload.get("skills"), list) else []
 
     if not username or not email or not password:
         return jsonify({"error": "Username, email, and password are required."}), 400
@@ -422,6 +485,9 @@ def register_user():
                 db.session.add(skill)
                 db.session.flush()
             db.session.add(UserSkill(user_id=user.user_id, skill_id=skill.skill_id, proficiency=3))
+
+    if picture_bytes:
+        db.session.add(UserPic(user_id=user.user_id, picture=picture_bytes))
 
     db.session.commit()
 
@@ -713,6 +779,123 @@ def get_issues():
             ],
         }
     )
+
+
+@api_bp.route("/issues/create", methods=["POST"])
+def create_issue_for_saved_repo():
+    """Create an issue row (+ optional issue_labels) for a repo the user has saved (incomplete or completed)."""
+    from models import Issue, IssueLabel, Repository, SavedRepository
+
+    user_id = _extract_user_id_from_request()
+    if user_id is None or user_id <= 0:
+        return jsonify({"error": "Missing authenticated user context."}), 401
+
+    payload = request.get_json(silent=True) or {}
+    repo_id_raw = payload.get("repo_id")
+    title = str(payload.get("title") or "").strip()
+    body = str(payload.get("body") or "").strip() or None
+    github_url = str(payload.get("github_url") or "").strip() or None
+    if github_url and len(github_url) > 300:
+        github_url = github_url[:300]
+    labels_raw = payload.get("labels")
+
+    if repo_id_raw is None:
+        return jsonify({"error": "repo_id is required."}), 400
+    try:
+        repo_id = int(repo_id_raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid repo_id."}), 400
+
+    if not title:
+        return jsonify({"error": "title is required."}), 400
+    if len(title) > 500:
+        return jsonify({"error": "title must be at most 500 characters."}), 400
+
+    saved = SavedRepository.query.filter_by(user_id=user_id, repo_id=repo_id).first()
+    if not saved:
+        return jsonify(
+            {"error": "You can only add issues for repositories on your saved or completed list."}
+        ), 403
+
+    repo = Repository.query.filter_by(repo_id=repo_id).first()
+    if not repo:
+        return jsonify({"error": "Repository not found."}), 404
+
+    label_rows = []
+    if isinstance(labels_raw, list):
+        for item in labels_raw:
+            if isinstance(item, str):
+                name = item.strip()
+                color = None
+            elif isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                c = str(item.get("color") or "").strip()
+                color = c[:10] if c else None
+            else:
+                continue
+            if not name or len(name) > 100:
+                continue
+            label_rows.append((name[:100], color))
+
+    deduped = []
+    seen_lower = set()
+    for name, color in label_rows:
+        key = name.lower()
+        if key in seen_lower:
+            continue
+        seen_lower.add(key)
+        deduped.append((name, color))
+
+    attempts = 0
+    issue = None
+    while attempts < 24:
+        attempts += 1
+        github_issue_id = -secrets.randbelow(2**61)
+        if Issue.query.filter_by(github_issue_id=github_issue_id).first():
+            continue
+        issue = Issue(
+            github_issue_id=github_issue_id,
+            repo_id=repo_id,
+            title=title[:500],
+            body=body,
+            state="open",
+            github_url=github_url,
+        )
+        db.session.add(issue)
+        try:
+            db.session.flush()
+            break
+        except IntegrityError:
+            db.session.rollback()
+            issue = None
+            continue
+
+    if issue is None:
+        return jsonify({"error": "Could not allocate a unique issue id. Try again."}), 500
+
+    for name, color in deduped:
+        db.session.add(IssueLabel(issue_id=issue.issue_id, name=name, color=color))
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "Could not save labels (duplicate or invalid)."}), 409
+
+    return jsonify(
+        {
+            "message": "Issue created.",
+            "issue": {
+                "issue_id": issue.issue_id,
+                "github_issue_id": issue.github_issue_id,
+                "repo_id": issue.repo_id,
+                "title": issue.title,
+                "body": issue.body,
+                "state": issue.state,
+                "github_url": issue.github_url,
+            },
+        }
+    ), 201
 
 
 @api_bp.route("/saved-repos", methods=["GET"])

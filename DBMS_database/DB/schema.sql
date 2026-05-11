@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS users (
     is_active     BOOLEAN      DEFAULT TRUE
 );
 
+-- Profile image bytes (one row per user when they upload at signup or later).
+CREATE TABLE IF NOT EXISTS user_pic (
+    user_id INT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+    picture BYTEA NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_profiles (
     profile_id        SERIAL       PRIMARY KEY,
     user_id           INT          UNIQUE NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,

@@ -82,6 +82,16 @@ def create_app():
             db.session.execute(
                 text("CREATE INDEX IF NOT EXISTS idx_weekly_goals_user_week ON weekly_goals(user_id, week_start_date)")
             )
+            db.session.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_pic (
+                        user_id INT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                        picture BYTEA NOT NULL
+                    )
+                    """
+                )
+            )
             db.session.commit()
         except SQLAlchemyError:
             # Allow app startup during first-time migration bootstrap.

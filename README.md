@@ -223,3 +223,11 @@ To transform GitHub exploration from:
 into:
 
 > structured, intelligent, effort-aware discovery of open-source projects
+
+--------------
+
+Any required dependencies can be installed directly from 
+cd UI
+npm install 
+
+But there need be .env with firebase credentials path which github doesnt allow to commit since they are sensitive details and have to be stored locally . 
